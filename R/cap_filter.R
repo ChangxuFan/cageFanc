@@ -66,6 +66,13 @@ cap.filter.nakul <- function(df, ce, samples = NULL, plot.dir,
   uG.pct$min <- apply(uG.pct, 1, min)
   
   res <- list(uG.pct = uG.pct, CTSSpeakcount = CTSSpeakcount)
+  browser()
+  ## write out browser tracks for visual examination
+  df <- cbind(df, uG.pct)
+  utilsFanc::write.zip.fanc(df = df, out.file = paste0(plot.dir, "/cap_df.tsv"), zip = F,
+                            row.names = F, col.names = T)
+  
+  saveRDS(res, paste0(plot.dir, "/cap_res.Rds"))
   return(res)
 }
 
@@ -109,4 +116,55 @@ gr.get.coverage <- function(gr.int, gr.signal, samples = NULL) {
   # identical(as.numeric(t$B6_Ly49Dn_mRNA), as.numeric(df.sum$B6_Ly49Dn_mRNA))
   #returned TRUE. my fast function returns exactly the same result as Nakul's slow one
   return(df.sum)
+}
+
+
+cap.filter.core <- function(x, max.cap = 3) {
+  cap.left <- sapply(1:max.cap, function(i) return(paste0(rep("G", i), collapse = "")))
+  cap.right <- sapply(1:max.cap, function(i) return(paste0(rep("C", i), collapse = "")))
+  bMate2 <- Rsamtools::bamFlagAsBitMatrix(x$flag)[, "isSecondMateRead"] == 1
+  nLeftS <- stringr::str_extract(x$cigar, paste0("^[1-", max.cap, "]S")) %>% sub("S", "", .) %>% 
+    as.numeric() 
+  nLeftS[is.na(nLeftS)] <- 0
+  leftNuc <- substr(x$seq, start = 1, stop = nLeftS)
+  bLeftCap <- leftNuc %in% cap.left
+  
+  nRightS <- stringr::str_extract(x$cigar, paste0("[^0-9][1-", max.cap, "]S$")) %>% gsub("[^0-9]", "", .) %>% 
+    as.numeric()
+  nRightS[is.na(nRightS)] <- 0
+  rightNuc <- substr(x$seq %>% stringi::stri_reverse(), start = 1, stop = nRightS)
+  bRightCap <- rightNuc %in% cap.right
+  bCap <- bMate2 | ((x$strand == "+" & bLeftCap) | (x$strand == "-" & bRightCap))
+  return(bCap)
+}
+
+cap.filter.bam <- function(bams.in, max.cap = 3, out.dir = NULL, 
+                           threads = 1, npar = 1) {
+  cap.filter.instance <- function(x) return(cap.filter.core(x = x, max.cap = max.cap))
+  out.bams.wCap <- utilsFanc::safelapply(bams.in, function(bam) {
+    if (is.null(out.dir)) {
+      out.dir <- dirname(bam)
+    }
+    root.name <- basename(bam) %>% sub(".bam$", "", .)
+    tmp.bam <- paste0(out.dir, "/", root.name, "_capFilter_tmp.bam")
+    out.bam <- paste0(out.dir, "/", root.name, "_capFilter.bam")
+    Rsamtools::filterBam(file = bam, destination = tmp.bam, filter = FilterRules(cap.filter.instance))
+    bamFanc::remove.mate(bam = tmp.bam, out.bam = out.bam, thread = threads)
+    return(out.bam)
+  }, threads = npar) %>% unlist()
+  
+  out.bams.noCap <- utilsFanc::safelapply(1:length(bams.in), function(i) {
+    bam <- bams.in[i]
+    bam.wCap <- out.bams.wCap[i]
+    reads.wCap <- Rsamtools::scanBam(file = bam.wCap, param = ScanBamParam(what = c("qname")))[[1]]$qname %>% 
+      unique()
+    filter.qname <- function(x) {
+      return(! x$qname %in% reads.wCap)
+    }
+    out.noCap <- sub("_capFilter.bam", "_capFilter_failed.bam", bam.wCap)
+    Rsamtools::filterBam(file = bam, destination = out.noCap, filter = FilterRules(filter.qname))
+    return(out.noCap)
+  })
+  res <- list(wCap = out.bams.wCap, noCap = out.bams.noCap)
+  return(res)
 }

@@ -68,12 +68,15 @@ umi.tools.dedup.juheon <- function(in.bam, out.bam=NULL, umi.tools.path = "/bar/
   return(out.bam)
 }
 
-samtools.filter.juheon <- function(in.bam, out.bam = NULL, thread,
+samtools.filter.juheon <- function(in.bam, out.bam = NULL, no.mapq = F,
+                                   thread,
                                    samtools.path = "/bar/cfan/anaconda2/envs/jupyter/bin/samtools",
                                    run = T, stdout.file = NULL, index = T) {
   if (is.null(out.bam))
     out.bam <- sub("bam$", "filtered.bam", in.bam)
-  cmd <- paste0(samtools.path, " view -@ ", thread, " -f 0x2 -F 0x900 -q 255 ",
+  dir.create(dirname(out.bam), showWarnings = F, recursive = T)
+  mapq <- ifelse(no.mapq, "", " -q 255 ")
+  cmd <- paste0(samtools.path, " view -@ ", thread, " -f 0x2 -F 0x900 ", mapq,
                 " -bo ", out.bam, " ", in.bam)
   utilsFanc::cmd.exec.fanc(cmd, stdout.file = stdout.file, intern = F, run = run)
 
