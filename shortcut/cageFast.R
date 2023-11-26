@@ -1,3 +1,4 @@
+#!/opt/apps/R/3.6.1/bin/Rscript
 options(stringsAsFactors = F)
 options(scipen = 20)
 args = commandArgs(trailingOnly=TRUE)
