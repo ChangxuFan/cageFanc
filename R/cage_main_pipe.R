@@ -2,8 +2,10 @@
 #/scratch/jmaeng/TE_TF_cancer/TE_gene_chimericreads/script/pipe_align_nanoCAGE.sh
 
 cage.pipe.juheon <- function(fastqs, root.name, out.dir="./", genome,
+                             no.umi = F,
                              tagdust.block.vec = xiaoyun.cage.block,
                              cutadapt.min.read.length = 50,
+                             other.mkdup.options = " --hash-table-size=3000000 --overflow-list-size=3000000 ", # only used for non-umi based dedup
                              thread, run=T) {
   if (length(fastqs) != 2)
     stop("length of fastqs must be 2")
@@ -12,27 +14,44 @@ cage.pipe.juheon <- function(fastqs, root.name, out.dir="./", genome,
 
   if (!grepl("/", genome))
     genome <- paste0("/bar/cfan/genomes/", genome, "/STAR_gencode_default")
-
+  out.dir <- normalizePath(out.dir)
   tagdust.dir <- paste0(out.dir, "/tagdust/",root.name, "/")
   bam.dir <- paste0(out.dir, "/star_aligned/", root.name, "/")
 
   system(paste0("mkdir -p ", tagdust.dir, " ", bam.dir))
   # note: this pipeline uses cagePipe as the prefix for intermediate variables. This is inheritated from test/mini.R.
-
-  cagePipe.td <- tagdust(fastqs = fastqs, out.root.name = paste0(tagdust.dir, "/", root.name), block.vec = tagdust.block.vec,
-                        thread = thread, show.finger.seq = T, run = run)
-  cagePipe.umi <- tagdust.get.umi(td.fastq = cagePipe.td, run = run, stdout.file = paste0(tagdust.dir, "/get_umi.log"))
+  if (no.umi) {
+    print("Skipping tagdust since no.umi == T")
+    cagePipe.td <- fastqs
+  } else {
+    cagePipe.td <- tagdust(fastqs = fastqs, out.root.name = paste0(tagdust.dir, "/", root.name), block.vec = tagdust.block.vec,
+                           thread = thread, show.finger.seq = T, run = run)
+    cagePipe.umi <- tagdust.get.umi(td.fastq = cagePipe.td, run = run, stdout.file = paste0(tagdust.dir, "/get_umi.log"))
+  }
+  
 
   cagePipe.td.trimmed <- cutadapt.fanc(fastqs = cagePipe.td, thread = thread, min.read.length = cutadapt.min.read.length,
                                       run = run, stdout.file = paste0(tagdust.dir, "/trim.log"))
 
   cagePipe.bam <- star.fanc(fastqs = cagePipe.td.trimmed, genome.index = genome, out.root.name = paste0(root.name, "_"),
                            outdir = bam.dir, thread = thread, run = run)
-  cagePipe.bam.umi <- bam.add.umi(in.bam = cagePipe.bam, umi.fastq = cagePipe.umi, run = run, stdout.file = paste0(bam.dir, "/add_umi.log"))
+  if (no.umi) {
+    print("skipping bam.add.umi, since no.umi == T")
+    cagePipe.bam.umi <- cagePipe.bam
+  } else {
+    cagePipe.bam.umi <- bam.add.umi(in.bam = cagePipe.bam, umi.fastq = cagePipe.umi, run = run, stdout.file = paste0(bam.dir, "/add_umi.log"))
+  }
+  
 
   samtools.index(in.bam = cagePipe.bam.umi, thread = thread, run = run)
-
-  cagePipe.bam.umi.dedup <- umi.tools.dedup.juheon(in.bam =  cagePipe.bam.umi, run = run, thread = thread)
+  if (no.umi) {
+    print("using sambamab dedup since no.umi == T")
+    cagePipe.bam.umi.dedup <- liteRnaSeqFanc::bam.dedup(in.bam = cagePipe.bam.umi, thread = thread, remove = T, 
+                                         other.options = other.mkdup.options)
+  } else {
+    cagePipe.bam.umi.dedup <- umi.tools.dedup.juheon(in.bam =  cagePipe.bam.umi, run = run, thread = thread)
+  }
+  
 
   cagePipe.bam.umi.dedup.filtered <- samtools.filter.juheon(in.bam = cagePipe.bam.umi.dedup, thread = thread,run = run, index = T,
                                                            stdout.file = paste0(bam.dir, "/filter.log"))
@@ -45,9 +64,9 @@ para.ez <- function(sample.tsv, n.parallel=1, func, other.params) {
     sample.tsv <- read.table(sample.tsv, as.is = T, header = T, sep = "\t", quote = "")
 
   res <- sample.tsv %>% utilsFanc::split.fanc("sample") %>%
-    mclapply(function(x) {
+    utilsFanc::safelapply(function(x) {
       do.call(what = func, args = c(list(fastqs = x$fastq, root.name = x$sample[1]), other.params))
-    }, mc.cores = n.parallel, mc.cleanup = T)
+    }, threads = n.parallel)
   return(res)
 }
 
